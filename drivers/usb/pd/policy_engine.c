@@ -222,7 +222,7 @@ static void *usbpd_ipc_log;
 #define usbpd_dbg(dev, fmt, ...) do { \
 	ipc_log_string(usbpd_ipc_log, "%s: %s: " fmt, dev_name(dev), __func__, \
 			##__VA_ARGS__); \
-	dev_dbg(dev, fmt, ##__VA_ARGS__); \
+	dev_err(dev, fmt, ##__VA_ARGS__); \
 	} while (0)
 
 #define usbpd_info(dev, fmt, ...) do { \
@@ -778,6 +778,8 @@ static int pd_select_pdo(struct usbpd *pd, int pdo_pos, int uv, int ua)
 	u8 type;
 	u32 pdo = pd->received_pdos[pdo_pos - 1];
 
+	usbpd_err(&pd->dev, "pdo_pos: %d, uv: %d, ua: %d\n", pdo_pos, uv, ua);
+
 	type = PD_SRC_PDO_TYPE(pdo);
 	if (type == PD_SRC_PDO_TYPE_FIXED) {
 		curr = max_current = PD_SRC_PDO_FIXED_MAX_CURR(pdo) * 10;
@@ -817,6 +819,15 @@ static int pd_select_pdo(struct usbpd *pd, int pdo_pos, int uv, int ua)
 	if (pd->vconn_enabled && !pd->vconn_is_external &&
 			pd->requested_voltage > 5000000)
 		return -ENOTSUPP;
+
+#ifdef CONFIG_PRODUCT_REALME_SDM710
+	usbpd_err(&pd->dev, "type: %d, uv: %d, ua: %d, curr=%d, force 5V/3A\n",
+			type, pd->requested_voltage, pd->requested_current, curr);
+	if (pd->requested_voltage > 5000000)
+		return -ENOTSUPP;
+	else
+		curr = 3000;
+#endif /*CONFIG_PRODUCT_REALME_SDM710*/
 
 	pd->requested_current = curr;
 	pd->requested_pdo = pdo_pos;
@@ -2102,7 +2113,8 @@ enable_reg:
 		usbpd_err(&pd->dev, "Unable to enable vbus (%d)\n", ret);
 	else
 		pd->vbus_enabled = true;
-
+#ifndef CONFIG_PRODUCT_REALME_SDM710
+/* Qiao.Hu@BSP.BaseDrv.CHG.Basic, 2019/05/15, Add for some keyboard modefy */
 	count = 10;
 	/*
 	 * Check to make sure VBUS voltage reaches above Vsafe5Vmin (4.75v)
@@ -2118,7 +2130,7 @@ enable_reg:
 
 	if (ret)
 		msleep(100); /* Delay to wait for VBUS ramp up if read fails */
-
+#endif
 	return ret;
 }
 
@@ -3699,6 +3711,7 @@ static ssize_t select_pdo_store(struct device *dev,
 		goto out;
 	}
 
+	usbpd_err(&pd->dev,"select_pdo_store:%d, uv:%d, ua:%d\n", pdo, uv, ua);
 	ret = pd_select_pdo(pd, pdo, uv, ua);
 	if (ret)
 		goto out;
@@ -3980,6 +3993,58 @@ static ssize_t get_battery_status_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "0x%08x\n", pd->battery_sts_dobj);
 }
 static DEVICE_ATTR_RW(get_battery_status);
+
+#ifdef CONFIG_PRODUCT_REALME_SDM710
+struct usbpd *pd_lobal;
+
+int usbpd_select_pdo(struct usbpd *pd, int pdo, int uv, int ua)
+{
+	int ret;
+
+	mutex_lock(&pd->swap_lock);
+
+	/* Only allowed if we are already in explicit sink contract */
+	if (pd->current_state != PE_SNK_READY || !is_sink_tx_ok(pd)) {
+		usbpd_err(&pd->dev, "select_pdo: Cannot select new PDO yet\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	if (pdo < 1 || pdo > 7) {
+		usbpd_err(&pd->dev, "select_pdo: invalid PDO:%d\n", pdo);
+		ret = -EINVAL;
+		goto out;
+	}
+	usbpd_err(&pd->dev,"usbpd_select_pdo:%d, uv:%d, ua:%d\n", pdo, uv, ua);
+	ret = pd_select_pdo(pd, pdo, uv, ua);
+	if (ret)
+		goto out;
+
+	reinit_completion(&pd->is_ready);
+	pd->send_request = true;
+	kick_sm(pd, 0);
+
+	/* wait for operation to complete */
+	if (!wait_for_completion_timeout(&pd->is_ready,
+			msecs_to_jiffies(1000))) {
+		usbpd_err(&pd->dev, "select_pdo: request timed out\n");
+		ret = -ETIMEDOUT;
+		goto out;
+	}
+
+	/* determine if request was accepted/rejected */
+	if (pd->selected_pdo != pd->requested_pdo ||
+			pd->current_voltage != pd->requested_voltage) {
+		usbpd_err(&pd->dev, "select_pdo: request rejected\n");
+		ret = -EINVAL;
+	}
+
+out:
+	pd->send_request = false;
+	mutex_unlock(&pd->swap_lock);
+	return ret;
+}
+#endif /*CONFIG_PRODUCT_REALME_SDM710*/
 
 static ssize_t dp_hpd_status_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
@@ -4322,6 +4387,10 @@ struct usbpd *usbpd_create(struct device *parent)
 
 	/* force read initial power_supply values */
 	psy_changed(&pd->psy_nb, PSY_EVENT_PROP_CHANGED, pd->usb_psy);
+
+#ifdef CONFIG_PRODUCT_REALME_SDM710
+	pd_lobal = pd;
+#endif
 
 	return pd;
 
