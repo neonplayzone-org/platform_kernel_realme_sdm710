@@ -2830,46 +2830,47 @@ enum Tfa98xx_Error tfaRunStartDSP(Tfa98xx_handle_t handle)
  */
 enum Tfa98xx_Error tfaRunStartup(Tfa98xx_handle_t handle, int profile)
 {
-    enum Tfa98xx_Error err = Tfa98xx_Error_Ok;
-	#ifdef CONFIG_PRODUCT_REALME_SDM710
+	enum Tfa98xx_Error err = Tfa98xx_Error_Ok;
+#ifdef CONFIG_PRODUCT_REALME_SDM710
 	int status1 = 0;
-	#endif /* CONFIG_PRODUCT_REALME_SDM710 */
-    nxpTfaDeviceList_t *dev = tfaContDevice(handle);
-    int tries, status, i, noinit=0;
+#endif /* CONFIG_PRODUCT_REALME_SDM710 */
+	nxpTfaDeviceList_t *dev = tfaContDevice(handle);
+	int tries, status, i, noinit=0;
 
-    #ifdef CONFIG_PRODUCT_REALME_SDM710
-    if (dev == NULL) {
-        pr_err("Devlist index error\n");
-        return Tfa98xx_Error_Other;
-    }
-    #endif /* CONFIG_PRODUCT_REALME_SDM710 */
-    /* process the device list to see if the user implemented the noinit */
-    for(i=0;i<dev->length;i++) {
-        if (dev->list[i].type == dscNoInit) {
-            noinit=1;
-            break;
-        }
-    }
+#ifdef CONFIG_PRODUCT_REALME_SDM710
+	if (dev == NULL) {
+		pr_err("Devlist index error\n");
+		return Tfa98xx_Error_Other;
+	}
+#endif /* CONFIG_PRODUCT_REALME_SDM710 */
 
-    if(!noinit) {
-        /* load the optimal TFA98XX in HW settings */
-        err = tfa98xx_init(handle);
-        PRINT_ASSERT(err);
-    } else {
-        pr_err("\nWarning: No init keyword found in the cnt file. Init is skipped! \n");
-    }
+	/* process the device list to see if the user implemented the noinit */
+	for(i=0;i<dev->length;i++) {
+		if (dev->list[i].type == dscNoInit) {
+			noinit=1;
+			break;
+		}
+	}
 
-    /* I2S settings to define the audio input properties
-     *  these must be set before the subsys is up */
-    // this will run the list until a non-register item is encountered
-    err = tfaContWriteRegsDev(handle); // write device register settings
-    PRINT_ASSERT(err);
-    // also write register the settings from the default profile
-    // NOTE we may still have ACS=1 so we can switch sample rate here
-    err = tfaContWriteRegsProf(handle, profile);
-    PRINT_ASSERT(err);
+	if(!noinit) {
+		/* load the optimal TFA98XX in HW settings */
+		err = tfa98xx_init(handle);
+		PRINT_ASSERT(err);
+	} else {
+		pr_err("\nWarning: No init keyword found in the cnt file. Init is skipped! \n");
+	}
 
-	#ifdef CONFIG_PRODUCT_REALME_SDM710
+	/* I2S settings to define the audio input properties
+	 *  these must be set before the subsys is up */
+	// this will run the list until a non-register item is encountered
+	err = tfaContWriteRegsDev(handle); // write device register settings
+	PRINT_ASSERT(err);
+	// also write register the settings from the default profile
+	// NOTE we may still have ACS=1 so we can switch sample rate here
+	err = tfaContWriteRegsProf(handle, profile);
+	PRINT_ASSERT(err);
+
+#ifdef CONFIG_PRODUCT_REALME_SDM710
 	/* NXP: Added putting DSP to reset mode to start TFA in proper sequence */
 	/*Reset Coolflux */
 	 switch (tfa98xx_dev_revision(handle)) {
@@ -2880,53 +2881,60 @@ enum Tfa98xx_Error tfaRunStartup(Tfa98xx_handle_t handle, int profile)
 			break;
 		default:
 			break;
-	 }
-	 #endif /* CONFIG_PRODUCT_REALME_SDM710 */
+	}
+#endif /* CONFIG_PRODUCT_REALME_SDM710 */
 
-    if(tfa98xx_dev_family(handle) == 2) {
-        /* Factory trimming for the Boost converter */
-        tfa_factory_trimmer(handle);
-    }
+	if(tfa98xx_dev_family(handle) == 2) {
+		/* Factory trimming for the Boost converter */
+		tfa_factory_trimmer(handle);
+	}
 
-    /* leave power off state */
-    err = tfa98xx_powerdown(handle, 0);
-    PRINT_ASSERT(err);
+	/* leave power off state */
+	err = tfa98xx_powerdown(handle, 0);
+	PRINT_ASSERT(err);
 
-    if (tfa98xx_dev_family(handle) == 2) {
-    /* signal that the clock settings are done
-     *  - PLL can start */
-        TFA_SET_BF_VOLATILE(handle, MANSCONF, 1);
-    }
+	if (tfa98xx_dev_family(handle) == 2) {
+	/* signal that the clock settings are done
+	 *  - PLL can start 
+	 */
+		TFA_SET_BF_VOLATILE(handle, MANSCONF, 1);
+	}
 
-    /*  wait until the PLL is ready
-     *    note that the DSP CPU is not running (RST=1) */
-    if (tfa98xx_runtime_verbose) {
-        if (TFA_GET_BF(handle, NOCLK))
-            pr_debug("Using internal clock\n");
-        pr_debug("Waiting for DSP system stable...\n");
-    }
-    for ( tries=1; tries < CFSTABLE_TRIES; tries++ ) {
-        err = tfa98xx_dsp_system_stable(handle, &status);
-        _ASSERT(err == Tfa98xx_Error_Ok);
-        if ( status )
-            break;
-        else
-            msleep_interruptible(10); /* wait 10ms to avoid busload */
-    }
-    if (tries == CFSTABLE_TRIES) {
-        if (tfa98xx_runtime_verbose) pr_debug("Timed out\n");
-        return Tfa98xx_Error_StateTimedOut;
-    }  else
-        if (tfa98xx_runtime_verbose) pr_debug(" OK (tries=%d)\n", tries);
-	#ifdef CONFIG_PRODUCT_REALME_SDM710
-	status = TFA_GET_BF(handle, CLKS);
-	status1 = TFA_GET_BF(handle, PLLS);
-	pr_info("CLKS:%d,PLLS:%d\n",status,status1);
-	#endif /* CONFIG_PRODUCT_REALME_SDM710 */
-    if (tfa98xx_runtime_verbose && tfa98xx_dev_family(handle) == 2)
-        err = show_current_state(handle);
+	/*  wait until the PLL is ready
+	 *    note that the DSP CPU is not running (RST=1)
+	 */
+	if (tfa98xx_runtime_verbose) {
+		if (TFA_GET_BF(handle, NOCLK))
+			pr_debug("Using internal clock\n");
+			pr_debug("Waiting for DSP system stable...\n");
+	}
 
-    return err;
+	for ( tries=1; tries < CFSTABLE_TRIES; tries++ ) {
+		err = tfa98xx_dsp_system_stable(handle, &status);
+		_ASSERT(err == Tfa98xx_Error_Ok);
+		if ( status )
+			break;
+		else
+			msleep_interruptible(10); /* wait 10ms to avoid busload */
+	}
+	
+	if (tries == CFSTABLE_TRIES) {
+		if (tfa98xx_runtime_verbose) 
+			pr_debug("Timed out\n");
+			return Tfa98xx_Error_StateTimedOut;
+	}  else {
+		if (tfa98xx_runtime_verbose) 
+			pr_debug(" OK (tries = %d)\n", tries);
+#ifdef CONFIG_PRODUCT_REALME_SDM710
+			status = TFA_GET_BF(handle, CLKS);
+			status1 = TFA_GET_BF(handle, PLLS);
+			pr_info("CLKS:%d,PLLS:%d\n", status, status1);
+#endif /* CONFIG_PRODUCT_REALME_SDM710 */
+		if (tfa98xx_runtime_verbose && tfa98xx_dev_family(handle) == 2)
+			err = show_current_state(handle);
+	}
+
+	return err;
 }
 
 /*
