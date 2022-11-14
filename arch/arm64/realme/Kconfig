@@ -1,0 +1,18 @@
+menu "Realme product selection"
+
+config PRODUCT_REALME
+	bool "Realme devices"
+	help
+	  This enables support for Realme devices.
+
+if PRODUCT_REALME
+
+config PRODUCT_REALME_SDM710
+	bool "Realme SDM710-Common"
+	help
+	  If this enables support for unified kernel
+	  tree for SDM710.
+
+endif
+
+endmenu
